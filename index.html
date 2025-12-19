@@ -10,6 +10,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
+    <!-- TensorFlow.js for DQN -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
 </head>
 
 <body>
@@ -139,12 +141,27 @@
                     </div>
                 </div>
 
+                <!-- AI Type Selection -->
+                <div class="control-panel ai-type-panel">
+                    <h3>🧠 AI Type</h3>
+                    <div class="ai-type-buttons">
+                        <button class="ai-type-btn" data-type="qlearning" id="btnQLearning">
+                            <span class="icon">📊</span>
+                            <span>Q-Learning</span>
+                        </button>
+                        <button class="ai-type-btn active" data-type="dqn" id="btnDQN">
+                            <span class="icon">🧠</span>
+                            <span>DQN</span>
+                        </button>
+                    </div>
+                </div>
+
                 <!-- AI Info -->
                 <div class="control-panel ai-panel">
                     <h3>🤖 AI Status</h3>
                     <div class="ai-info">
                         <div class="ai-stat">
-                            <span class="label">Q-Table Size:</span>
+                            <span class="label">Memory Size:</span>
                             <span class="value" id="qTableSize">0</span>
                         </div>
                         <div class="ai-stat">
@@ -152,8 +169,8 @@
                             <span class="value" id="epsilon">1.00</span>
                         </div>
                         <div class="ai-stat">
-                            <span class="label">Learning Rate:</span>
-                            <span class="value">0.1</span>
+                            <span class="label">AI Type:</span>
+                            <span class="value" id="aiTypeLabel">DQN</span>
                         </div>
                     </div>
                 </div>
@@ -169,6 +186,7 @@
     <!-- Scripts -->
     <script src="js/player.js"></script>
     <script src="js/rl-agent.js"></script>
+    <script src="js/dqn-agent.js"></script>
     <script src="js/game.js"></script>
     <script src="js/visualizer.js"></script>
     <script src="js/main.js"></script>

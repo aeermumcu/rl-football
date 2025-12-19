@@ -7,11 +7,15 @@ class App {
         this.gameCanvas = document.getElementById('gameCanvas');
         this.chartCanvas = document.getElementById('chartCanvas');
 
-        // Initialize game and AI
+        // Initialize game
         this.game = new Game(this.gameCanvas);
-        this.blipAgent = new RLAgent('Blip', 'blip');
-        this.bloopAgent = new RLAgent('Bloop', 'bloop');
         this.visualizer = new Visualizer(this.chartCanvas);
+
+        // AI type: 'qlearning' or 'dqn'
+        this.aiType = 'dqn';
+
+        // Initialize agents based on AI type
+        this.initAgents();
 
         // State
         this.mode = 'train'; // train, watch, play
@@ -39,6 +43,16 @@ class App {
         this.updateUI();
     }
 
+    initAgents() {
+        if (this.aiType === 'dqn') {
+            this.blipAgent = new DQNAgent('Blip', 'blip');
+            this.bloopAgent = new DQNAgent('Bloop', 'bloop');
+        } else {
+            this.blipAgent = new RLAgent('Blip', 'blip');
+            this.bloopAgent = new RLAgent('Bloop', 'bloop');
+        }
+    }
+
     bindControls() {
         // Mode buttons
         document.querySelectorAll('.mode-btn').forEach(btn => {
@@ -59,6 +73,13 @@ class App {
         document.querySelectorAll('.match-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 this.setMatchTime(parseInt(btn.dataset.time));
+            });
+        });
+
+        // AI type buttons
+        document.querySelectorAll('.ai-type-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.setAIType(btn.dataset.type);
             });
         });
 
@@ -131,6 +152,24 @@ class App {
         });
     }
 
+    setAIType(type) {
+        if (this.running) {
+            alert('Please pause training before switching AI type!');
+            return;
+        }
+
+        this.aiType = type;
+
+        // Update UI
+        document.querySelectorAll('.ai-type-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.type === type);
+        });
+        document.getElementById('aiTypeLabel').textContent = type === 'dqn' ? 'DQN' : 'Q-Learn';
+
+        // Reset and reinitialize agents
+        this.reset();
+    }
+
     toggleRunning() {
         this.running = !this.running;
 
@@ -150,8 +189,8 @@ class App {
         this.episodeCount = 0;
         this.stats = { blipWins: 0, bloopWins: 0, draws: 0, totalGoals: 0 };
 
-        this.blipAgent = new RLAgent('Blip', 'blip');
-        this.bloopAgent = new RLAgent('Bloop', 'bloop');
+        // Reinitialize agents based on current AI type
+        this.initAgents();
         this.visualizer.reset();
 
         this.game.reset();
@@ -261,9 +300,20 @@ class App {
                 this.game.fieldWidth, this.game.fieldHeight, this.game.goalY
             );
 
-            // Learn
-            this.blipAgent.learn(blipReward, newBlipState, done);
-            this.bloopAgent.learn(bloopReward, newBloopState, done);
+            // Learn based on AI type
+            if (this.aiType === 'dqn') {
+                // DQN: store experience and train
+                this.blipAgent.remember(blipState, this.blipAgent.lastAction, blipReward, newBlipState, done);
+                this.bloopAgent.remember(bloopState, this.bloopAgent.lastAction, bloopReward, newBloopState, done);
+
+                // Train networks (async but we don't await to keep game fast)
+                this.blipAgent.train();
+                this.bloopAgent.train();
+            } else {
+                // Q-learning: direct update
+                this.blipAgent.learn(blipReward, newBlipState, done);
+                this.bloopAgent.learn(bloopReward, newBloopState, done);
+            }
         }
 
         // Episode end
@@ -327,21 +377,43 @@ class App {
         document.getElementById('draws').textContent = this.stats.draws;
         document.getElementById('totalGoals').textContent = this.stats.totalGoals;
 
-        // AI info
-        document.getElementById('qTableSize').textContent =
-            (this.blipAgent.getQTableSize() + this.bloopAgent.getQTableSize()).toLocaleString();
+        // AI info - different display for each type
+        if (this.aiType === 'dqn') {
+            // DQN: show replay buffer size
+            const bufferSize = (this.blipAgent.getBufferSize?.() || 0) +
+                (this.bloopAgent.getBufferSize?.() || 0);
+            document.getElementById('qTableSize').textContent = bufferSize.toLocaleString();
+        } else {
+            // Q-learning: show Q-table size
+            document.getElementById('qTableSize').textContent =
+                (this.blipAgent.getQTableSize() + this.bloopAgent.getQTableSize()).toLocaleString();
+        }
+
         document.getElementById('epsilon').textContent =
             this.blipAgent.getEpsilon().toFixed(3);
     }
 
-    saveTraining() {
+    async saveTraining() {
+        let blipAgentData, bloopAgentData;
+
+        if (this.aiType === 'dqn') {
+            // DQN: export neural network weights
+            blipAgentData = await this.blipAgent.exportWeights();
+            bloopAgentData = await this.bloopAgent.exportWeights();
+        } else {
+            // Q-learning: export Q-table
+            blipAgentData = this.blipAgent.exportQTable();
+            bloopAgentData = this.bloopAgent.exportQTable();
+        }
+
         const data = {
-            version: 1,
+            version: 2,
+            aiType: this.aiType,
             timestamp: new Date().toISOString(),
             episodeCount: this.episodeCount,
             stats: this.stats,
-            blipAgent: this.blipAgent.exportQTable(),
-            bloopAgent: this.bloopAgent.exportQTable(),
+            blipAgent: blipAgentData,
+            bloopAgent: bloopAgentData,
             winHistory: {
                 blip: this.visualizer.blipWinHistory,
                 bloop: this.visualizer.bloopWinHistory
@@ -354,27 +426,52 @@ class App {
 
         const a = document.createElement('a');
         a.href = url;
-        a.download = `rl-football-${this.episodeCount}-episodes.json`;
+        a.download = `rl-football-${this.aiType}-${this.episodeCount}-episodes.json`;
         a.click();
 
         URL.revokeObjectURL(url);
     }
 
-    loadTraining(file) {
+    async loadTraining(file) {
         if (!file) return;
 
         const reader = new FileReader();
-        reader.onload = (e) => {
+        reader.onload = async (e) => {
             try {
                 const data = JSON.parse(e.target.result);
+
+                // Check AI type compatibility
+                const savedType = data.aiType || 'qlearning';
+                if (savedType !== this.aiType) {
+                    const switchType = confirm(
+                        `This save file is for ${savedType.toUpperCase()}. ` +
+                        `You're currently using ${this.aiType.toUpperCase()}. ` +
+                        `Switch to ${savedType.toUpperCase()} to load?`
+                    );
+                    if (switchType) {
+                        this.aiType = savedType;
+                        document.querySelectorAll('.ai-type-btn').forEach(btn => {
+                            btn.classList.toggle('active', btn.dataset.type === savedType);
+                        });
+                        document.getElementById('aiTypeLabel').textContent = savedType === 'dqn' ? 'DQN' : 'Q-Learn';
+                        this.initAgents();
+                    } else {
+                        return;
+                    }
+                }
 
                 // Restore state
                 this.episodeCount = data.episodeCount || 0;
                 this.stats = data.stats || { blipWins: 0, bloopWins: 0, draws: 0, totalGoals: 0 };
 
-                // Restore agents
-                this.blipAgent.importQTable(data.blipAgent);
-                this.bloopAgent.importQTable(data.bloopAgent);
+                // Restore agents based on type
+                if (this.aiType === 'dqn') {
+                    await this.blipAgent.importWeights(data.blipAgent);
+                    await this.bloopAgent.importWeights(data.bloopAgent);
+                } else {
+                    this.blipAgent.importQTable(data.blipAgent);
+                    this.bloopAgent.importQTable(data.bloopAgent);
+                }
 
                 // Restore visualizer history
                 if (data.winHistory) {
@@ -389,9 +486,10 @@ class App {
                 this.visualizer.draw();
                 this.updateUI();
 
-                alert(`✅ Loaded ${this.episodeCount} episodes of training!`);
+                alert(`✅ Loaded ${this.episodeCount} episodes of ${this.aiType.toUpperCase()} training!`);
             } catch (err) {
                 alert('❌ Error loading file: ' + err.message);
+                console.error(err);
             }
         };
         reader.readAsText(file);
