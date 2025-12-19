@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RL Football Champions ⚽</title>
+    <meta name="description" content="Watch two cute robots learn to play football through reinforcement learning!">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🤖</span>
+                <h1>RL Football Champions</h1>
+                <span class="logo-icon">⚽</span>
+            </div>
+            <p class="tagline">Watch Blip & Bloop learn to play through reinforcement learning!</p>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Game Area -->
+            <div class="game-area">
+                <div class="game-container">
+                    <canvas id="gameCanvas" width="800" height="500"></canvas>
+                    <div class="score-overlay">
+                        <div class="player-score blip-score">
+                            <span class="player-name">🔵 Blip</span>
+                            <span class="score" id="blipScore">0</span>
+                        </div>
+                        <div class="match-info">
+                            <span class="episode-counter">Episode <span id="episodeCount">0</span></span>
+                            <span class="timer" id="matchTimer">0:30</span>
+                        </div>
+                        <div class="player-score bloop-score">
+                            <span class="score" id="bloopScore">0</span>
+                            <span class="player-name">Bloop 🔴</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sidebar Controls -->
+            <aside class="sidebar">
+                <!-- Mode Selection -->
+                <div class="control-panel mode-panel">
+                    <h3>🎮 Game Mode</h3>
+                    <div class="mode-buttons">
+                        <button class="mode-btn active" data-mode="train" id="btnTrain">
+                            <span class="icon">🧠</span>
+                            <span>Train AI</span>
+                        </button>
+                        <button class="mode-btn" data-mode="watch" id="btnWatch">
+                            <span class="icon">👀</span>
+                            <span>Watch</span>
+                        </button>
+                        <button class="mode-btn" data-mode="play" id="btnPlay">
+                            <span class="icon">🎯</span>
+                            <span>Play vs AI</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Training Controls -->
+                <div class="control-panel training-panel">
+                    <h3>⚡ Training Speed</h3>
+                    <div class="speed-buttons">
+                        <button class="speed-btn active" data-speed="1">1x</button>
+                        <button class="speed-btn" data-speed="2">2x</button>
+                        <button class="speed-btn" data-speed="5">5x</button>
+                        <button class="speed-btn" data-speed="10">10x</button>
+                        <button class="speed-btn" data-speed="50">50x</button>
+                    </div>
+
+                    <h3 style="margin-top: 1rem;">⏱️ Match Length</h3>
+                    <div class="speed-buttons">
+                        <button class="match-btn" data-time="10">10s</button>
+                        <button class="match-btn" data-time="30">30s</button>
+                        <button class="match-btn active" data-time="60">1m</button>
+                        <button class="match-btn" data-time="120">2m</button>
+                        <button class="match-btn" data-time="300">5m</button>
+                    </div>
+                    <div class="training-actions">
+                        <button class="action-btn start-btn" id="btnStart">
+                            <span>▶️ Start Training</span>
+                        </button>
+                        <button class="action-btn reset-btn" id="btnReset">
+                            <span>🔄 Reset</span>
+                        </button>
+                    </div>
+                    <div class="training-actions" style="margin-top: 0.5rem;">
+                        <button class="action-btn save-btn" id="btnSave">
+                            <span>💾 Save</span>
+                        </button>
+                        <button class="action-btn load-btn" id="btnLoad">
+                            <span>📂 Load</span>
+                        </button>
+                        <input type="file" id="fileInput" accept=".json" style="display: none;">
+                    </div>
+                </div>
+
+                <!-- Learning Stats -->
+                <div class="control-panel stats-panel">
+                    <h3>📊 Learning Stats</h3>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <span class="stat-label">Blip Wins</span>
+                            <span class="stat-value blip-color" id="blipWins">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Bloop Wins</span>
+                            <span class="stat-value bloop-color" id="bloopWins">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Draws</span>
+                            <span class="stat-value" id="draws">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Goals</span>
+                            <span class="stat-value" id="totalGoals">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Win Rate Chart -->
+                <div class="control-panel chart-panel">
+                    <h3>📈 Win Rate (Last 50)</h3>
+                    <canvas id="chartCanvas" width="280" height="120"></canvas>
+                    <div class="chart-legend">
+                        <span class="legend-item blip">🔵 Blip</span>
+                        <span class="legend-item bloop">🔴 Bloop</span>
+                    </div>
+                </div>
+
+                <!-- AI Info -->
+                <div class="control-panel ai-panel">
+                    <h3>🤖 AI Status</h3>
+                    <div class="ai-info">
+                        <div class="ai-stat">
+                            <span class="label">Q-Table Size:</span>
+                            <span class="value" id="qTableSize">0</span>
+                        </div>
+                        <div class="ai-stat">
+                            <span class="label">Exploration (ε):</span>
+                            <span class="value" id="epsilon">1.00</span>
+                        </div>
+                        <div class="ai-stat">
+                            <span class="label">Learning Rate:</span>
+                            <span class="value">0.1</span>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Built with ❤️ using Q-Learning | Use Arrow Keys to play in Play Mode</p>
+        </footer>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/player.js"></script>
+    <script src="js/rl-agent.js"></script>
+    <script src="js/game.js"></script>
+    <script src="js/visualizer.js"></script>
+    <script src="js/main.js"></script>
+</body>
+
+</html>
