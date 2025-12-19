@@ -15,7 +15,7 @@ class DQNAgent {
         this.gamma = 0.99;           // Discount factor
         this.epsilon = 1.0;          // Exploration rate
         this.epsilonMin = 0.05;
-        this.epsilonDecay = 0.9995;
+        this.epsilonDecay = 0.995;    // Decay per EPISODE (not per step)
 
         // Experience replay
         this.replayBuffer = [];
@@ -261,10 +261,7 @@ class DQNAgent {
             await this.updateTargetNetwork();
         }
 
-        // Decay epsilon
-        if (this.epsilon > this.epsilonMin) {
-            this.epsilon *= this.epsilonDecay;
-        }
+        // Note: epsilon decay moved to reset() - happens per episode, not per step
     }
 
     /**
@@ -328,6 +325,11 @@ class DQNAgent {
         this.lastState = null;
         this.lastAction = null;
         this.lastDistToBall = null;
+
+        // Decay epsilon once per episode
+        if (this.epsilon > this.epsilonMin) {
+            this.epsilon *= this.epsilonDecay;
+        }
     }
 
     /**

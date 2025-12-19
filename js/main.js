@@ -206,20 +206,25 @@ class App {
     run() {
         if (!this.running) return;
 
-        // Run multiple steps per frame at higher speeds
-        const stepsPerFrame = this.speed;
-        const renderEvery = Math.max(1, Math.floor(this.speed / 5));
+        // Cap steps per frame to prevent freezing
+        // DQN is heavier, so use fewer steps
+        const maxStepsPerFrame = this.aiType === 'dqn' ? 10 : 50;
+        const stepsPerFrame = Math.min(this.speed, maxStepsPerFrame);
 
         for (let i = 0; i < stepsPerFrame; i++) {
             this.step();
         }
 
-        // Render (less frequently at high speeds)
-        if (this.speed <= 5 || Math.random() < 0.1) {
+        // Track frames for consistent rendering
+        this.frameCount = (this.frameCount || 0) + 1;
+
+        // Always render every N frames to prevent black screen
+        const renderEveryNFrames = this.speed >= 50 ? 5 : (this.speed >= 10 ? 2 : 1);
+        if (this.frameCount % renderEveryNFrames === 0) {
             this.game.draw();
+            this.visualizer.draw();
+            this.updateUI();
         }
-        this.visualizer.draw();
-        this.updateUI();
 
         requestAnimationFrame(() => this.run());
     }
@@ -306,9 +311,13 @@ class App {
                 this.blipAgent.remember(blipState, this.blipAgent.lastAction, blipReward, newBlipState, done);
                 this.bloopAgent.remember(bloopState, this.bloopAgent.lastAction, bloopReward, newBloopState, done);
 
-                // Train networks (async but we don't await to keep game fast)
-                this.blipAgent.train();
-                this.bloopAgent.train();
+                // Throttle training to reduce CPU load at high speeds
+                // Only train every 4th step
+                this.trainCounter = (this.trainCounter || 0) + 1;
+                if (this.trainCounter % 4 === 0) {
+                    this.blipAgent.train();
+                    this.bloopAgent.train();
+                }
             } else {
                 // Q-learning: direct update
                 this.blipAgent.learn(blipReward, newBlipState, done);
@@ -350,6 +359,13 @@ class App {
 
         // Update visualizer
         this.visualizer.addResult(winner);
+
+        // Autosave every 500 episodes
+        const autosaveEnabled = document.getElementById('autosaveCheckbox')?.checked;
+        if (autosaveEnabled && this.episodeCount > 0 && this.episodeCount % 500 === 0) {
+            console.log(`🔄 Autosaving at episode ${this.episodeCount}...`);
+            this.saveTraining();
+        }
 
         // Reset agents for new episode
         this.blipAgent.reset();

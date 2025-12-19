@@ -469,6 +469,33 @@ body::before {
     box-shadow: 0 6px 20px rgba(168, 85, 247, 0.4);
 }
 
+/* Autosave Toggle */
+.autosave-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    transition: var(--transition-fast);
+}
+
+.autosave-toggle:hover {
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--text-primary);
+}
+
+.autosave-toggle input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent-green);
+    cursor: pointer;
+}
+
 /* Stats Grid */
 .stats-grid {
     display: grid;
