@@ -167,14 +167,12 @@ class DQNAgent {
             // Explore: random action
             actionIndex = Math.floor(Math.random() * this.actionSize);
         } else {
-            // Exploit: use neural network
-            const stateTensor = tf.tensor2d([state], [1, this.stateSize]);
-            const qValues = this.model.predict(stateTensor);
-            actionIndex = qValues.argMax(1).dataSync()[0];
-
-            // Clean up tensors
-            stateTensor.dispose();
-            qValues.dispose();
+            // Exploit: use neural network with proper tensor cleanup
+            actionIndex = tf.tidy(() => {
+                const stateTensor = tf.tensor2d([state], [1, this.stateSize]);
+                const qValues = this.model.predict(stateTensor);
+                return qValues.argMax(1).dataSync()[0];
+            });
         }
 
         this.lastState = state;
@@ -216,22 +214,21 @@ class DQNAgent {
         const states = batch.map(e => e.state);
         const nextStates = batch.map(e => e.nextState);
 
-        const statesTensor = tf.tensor2d(states, [this.batchSize, this.stateSize]);
-        const nextStatesTensor = tf.tensor2d(nextStates, [this.batchSize, this.stateSize]);
+        // Use tf.tidy for intermediate tensors that can be auto-cleaned
+        const { currentQsArray, nextQsArray } = tf.tidy(() => {
+            const statesTensor = tf.tensor2d(states, [this.batchSize, this.stateSize]);
+            const nextStatesTensor = tf.tensor2d(nextStates, [this.batchSize, this.stateSize]);
+            const currentQs = this.model.predict(statesTensor);
+            const nextQs = this.targetModel.predict(nextStatesTensor);
+            return {
+                currentQsArray: currentQs.arraySync(),
+                nextQsArray: nextQs.arraySync()
+            };
+        });
 
-        // Get current Q values
-        const currentQs = this.model.predict(statesTensor);
-
-        // Get next Q values from target network
-        const nextQs = this.targetModel.predict(nextStatesTensor);
-
-        // Calculate target Q values
-        const currentQsArray = currentQs.arraySync();
-        const nextQsArray = nextQs.arraySync();
-
+        // Calculate target Q values (pure JS, no tensors)
         for (let i = 0; i < this.batchSize; i++) {
             const { action, reward, done } = batch[i];
-
             if (done) {
                 currentQsArray[i][action] = reward;
             } else {
@@ -240,7 +237,8 @@ class DQNAgent {
             }
         }
 
-        // Train the model
+        // Train the model with proper cleanup
+        const statesTensor = tf.tensor2d(states, [this.batchSize, this.stateSize]);
         const targetTensor = tf.tensor2d(currentQsArray, [this.batchSize, this.actionSize]);
 
         await this.model.fit(statesTensor, targetTensor, {
@@ -248,11 +246,8 @@ class DQNAgent {
             verbose: 0
         });
 
-        // Clean up tensors
+        // Clean up training tensors
         statesTensor.dispose();
-        nextStatesTensor.dispose();
-        currentQs.dispose();
-        nextQs.dispose();
         targetTensor.dispose();
 
         // Update target network periodically
