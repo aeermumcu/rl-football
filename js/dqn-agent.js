@@ -264,50 +264,85 @@ class DQNAgent {
      */
     calculateReward(player, ball, opponent, event, fieldWidth) {
         let reward = 0;
+        const fieldHeight = 420;
 
-        // Goal events (big rewards)
+        // === GOAL EVENTS (very high rewards) ===
         if (event === 'scored') {
-            reward += 100;
+            reward += 200;  // Doubled! Make winning very attractive
         } else if (event === 'conceded') {
-            reward -= 100;
+            reward -= 150;  // Less penalty than reward to encourage attacking
         }
 
-        // Distance to ball
+        // === DISTANCE TO BALL ===
         const distToBall = player.distanceTo(ball);
-        if (distToBall < 50) {
-            reward += 2;
-        } else if (distToBall < 100) {
-            reward += 1;
+        if (distToBall < 40) {
+            reward += 3;  // Very close to ball - excellent!
+        } else if (distToBall < 80) {
+            reward += 1.5;
+        } else if (distToBall < 150) {
+            reward += 0.5;
         }
 
-        // Moving toward ball
+        // Moving toward ball bonus
         if (this.lastDistToBall !== null && distToBall < this.lastDistToBall) {
-            reward += 0.5;
+            reward += 0.8;
         }
         this.lastDistToBall = distToBall;
 
-        // Ball moving toward goal
-        const ballMovingTowardGoal = (this.team === 'blip' && ball.vx > 0) ||
-            (this.team === 'bloop' && ball.vx < 0);
-        if (ballMovingTowardGoal && distToBall < 80) {
+        // === ATTACKING POSITION REWARDS ===
+        const attackingGoalX = this.team === 'blip' ? fieldWidth : 0;
+        const defendingGoalX = this.team === 'blip' ? 0 : fieldWidth;
+
+        // Ball in attacking half
+        const ballInAttackHalf = this.team === 'blip'
+            ? ball.x > fieldWidth / 2
+            : ball.x < fieldWidth / 2;
+        if (ballInAttackHalf && distToBall < 100) {
+            reward += 2;  // Reward being near ball in attack
+        }
+
+        // Ball moving toward opponent's goal
+        const ballMovingTowardGoal = (this.team === 'blip' && ball.vx > 2) ||
+            (this.team === 'bloop' && ball.vx < -2);
+        if (ballMovingTowardGoal) {
+            reward += 3;  // Strong reward for attacking!
+            if (distToBall < 60) {
+                reward += 2;  // Extra if you caused it
+            }
+        }
+
+        // Ball close to opponent's goal
+        const distBallToGoal = Math.abs(ball.x - attackingGoalX);
+        if (distBallToGoal < 150) {
+            reward += 3;  // Ball near their goal is great!
+        } else if (distBallToGoal < 250) {
             reward += 1;
         }
 
-        // Time penalty
-        reward -= 0.1;
+        // === PENALTIES ===
+        // Small time penalty (reduced to not discourage play)
+        reward -= 0.05;
 
         // Corner penalty
-        const fieldHeight = 420;
         const cornerMargin = 60;
         const inCorner = (player.x < cornerMargin || player.x > fieldWidth - cornerMargin) &&
             (player.y < cornerMargin || player.y > fieldHeight - cornerMargin);
         if (inCorner) {
-            reward -= 2;
+            reward -= 1.5;
         }
 
-        // Far from ball penalty
-        if (distToBall > 200) {
+        // Far from ball penalty (stronger)
+        if (distToBall > 250) {
+            reward -= 1;
+        } else if (distToBall > 180) {
             reward -= 0.5;
+        }
+
+        // Ball moving toward own goal (bad!)
+        const ballMovingTowardOwnGoal = (this.team === 'blip' && ball.vx < -2) ||
+            (this.team === 'bloop' && ball.vx > 2);
+        if (ballMovingTowardOwnGoal && distToBall < 100) {
+            reward -= 2;  // You should be stopping this!
         }
 
         return reward;
