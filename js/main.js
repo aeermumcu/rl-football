@@ -181,6 +181,11 @@ class App {
         } else {
             btn.innerHTML = '<span>▶️ Start Training</span>';
             btn.classList.remove('running');
+            // Clear training interval when paused
+            if (this.trainInterval) {
+                clearInterval(this.trainInterval);
+                this.trainInterval = null;
+            }
         }
     }
 
@@ -206,14 +211,34 @@ class App {
     run() {
         if (!this.running) return;
 
-        // Cap steps per frame to prevent freezing
-        // DQN is heavier, so use fewer steps
-        const maxStepsPerFrame = this.aiType === 'dqn' ? 10 : 50;
-        const stepsPerFrame = Math.min(this.speed, maxStepsPerFrame);
-
-        for (let i = 0; i < stepsPerFrame; i++) {
-            this.step();
+        // Clear any existing interval
+        if (this.trainInterval) {
+            clearInterval(this.trainInterval);
         }
+
+        // Use setInterval for training (works in background tabs!)
+        // 16ms = ~60fps equivalent
+        this.trainInterval = setInterval(() => {
+            if (!this.running) {
+                clearInterval(this.trainInterval);
+                return;
+            }
+
+            // Cap steps per frame to prevent freezing
+            const maxStepsPerFrame = this.aiType === 'dqn' ? 10 : 50;
+            const stepsPerFrame = Math.min(this.speed, maxStepsPerFrame);
+
+            for (let i = 0; i < stepsPerFrame; i++) {
+                this.step();
+            }
+        }, 16);
+
+        // Use requestAnimationFrame only for rendering (pauses in background, that's fine)
+        this.renderLoop();
+    }
+
+    renderLoop() {
+        if (!this.running) return;
 
         // Track frames for consistent rendering
         this.frameCount = (this.frameCount || 0) + 1;
@@ -226,7 +251,7 @@ class App {
             this.updateUI();
         }
 
-        requestAnimationFrame(() => this.run());
+        requestAnimationFrame(() => this.renderLoop());
     }
 
     step() {
