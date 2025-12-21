@@ -75,15 +75,22 @@ class DQNAgent {
     createNetwork() {
         const model = tf.sequential();
 
-        // Input layer + first hidden layer
+        // Input layer + first hidden layer (BIGGER: 256 neurons)
         model.add(tf.layers.dense({
             inputShape: [this.stateSize],
+            units: 256,
+            activation: 'relu',
+            kernelInitializer: 'heNormal'
+        }));
+
+        // Second hidden layer (128 neurons)
+        model.add(tf.layers.dense({
             units: 128,
             activation: 'relu',
             kernelInitializer: 'heNormal'
         }));
 
-        // Second hidden layer
+        // Third hidden layer (64 neurons)
         model.add(tf.layers.dense({
             units: 64,
             activation: 'relu',
@@ -214,26 +221,31 @@ class DQNAgent {
         const states = batch.map(e => e.state);
         const nextStates = batch.map(e => e.nextState);
 
-        // Use tf.tidy for intermediate tensors that can be auto-cleaned
-        const { currentQsArray, nextQsArray } = tf.tidy(() => {
+        // DOUBLE DQN: Use main network to SELECT action, target network to EVALUATE
+        // This reduces overestimation of Q-values
+        const { currentQsArray, nextQsMainArray, nextQsTargetArray } = tf.tidy(() => {
             const statesTensor = tf.tensor2d(states, [this.batchSize, this.stateSize]);
             const nextStatesTensor = tf.tensor2d(nextStates, [this.batchSize, this.stateSize]);
             const currentQs = this.model.predict(statesTensor);
-            const nextQs = this.targetModel.predict(nextStatesTensor);
+            const nextQsMain = this.model.predict(nextStatesTensor);  // For action selection
+            const nextQsTarget = this.targetModel.predict(nextStatesTensor);  // For evaluation
             return {
                 currentQsArray: currentQs.arraySync(),
-                nextQsArray: nextQs.arraySync()
+                nextQsMainArray: nextQsMain.arraySync(),
+                nextQsTargetArray: nextQsTarget.arraySync()
             };
         });
 
-        // Calculate target Q values (pure JS, no tensors)
+        // Calculate target Q values using DOUBLE DQN
         for (let i = 0; i < this.batchSize; i++) {
             const { action, reward, done } = batch[i];
             if (done) {
                 currentQsArray[i][action] = reward;
             } else {
-                const maxNextQ = Math.max(...nextQsArray[i]);
-                currentQsArray[i][action] = reward + this.gamma * maxNextQ;
+                // Double DQN: select action with main network, evaluate with target
+                const bestAction = nextQsMainArray[i].indexOf(Math.max(...nextQsMainArray[i]));
+                const nextQ = nextQsTargetArray[i][bestAction];
+                currentQsArray[i][action] = reward + this.gamma * nextQ;
             }
         }
 
@@ -323,19 +335,35 @@ class DQNAgent {
         // Small time penalty (reduced to not discourage play)
         reward -= 0.05;
 
-        // Corner penalty
-        const cornerMargin = 60;
+        // Corner penalty - MUCH stronger to prevent getting stuck
+        const cornerMargin = 80;  // Bigger margin
         const inCorner = (player.x < cornerMargin || player.x > fieldWidth - cornerMargin) &&
             (player.y < cornerMargin || player.y > fieldHeight - cornerMargin);
         if (inCorner) {
-            reward -= 1.5;
+            reward -= 5;  // Strong penalty!
+            // Extra penalty if stuck in corner far from ball
+            if (distToBall > 100) {
+                reward -= 3;
+            }
         }
 
         // Far from ball penalty (stronger)
         if (distToBall > 250) {
-            reward -= 1;
+            reward -= 1.5;
         } else if (distToBall > 180) {
-            reward -= 0.5;
+            reward -= 0.8;
+        }
+
+        // === INACTIVITY PENALTY ===
+        // Penalize standing still when you should be chasing the ball
+        const playerSpeed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+        if (playerSpeed < 0.5 && distToBall > 60) {
+            reward -= 2;  // Don't just stand there!
+        }
+
+        // Bonus for moving toward ball (not already covered above)
+        if (playerSpeed > 1 && this.lastDistToBall !== null && distToBall < this.lastDistToBall) {
+            reward += 1;  // Active pursuit bonus
         }
 
         // Ball moving toward own goal (bad!)
