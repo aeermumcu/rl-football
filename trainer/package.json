@@ -9,6 +9,6 @@
         "train:10k": "node train.js --episodes=10000"
     },
     "dependencies": {
-        "@tensorflow/tfjs": "^4.17.0"
+        "@tensorflow/tfjs-node": "4.2.0"
     }
 }
