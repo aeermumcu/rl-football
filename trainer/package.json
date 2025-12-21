@@ -1,14 +1,14 @@
 {
-  "name": "rl-football-trainer",
-  "version": "1.0.0",
-  "description": "Headless training for RL Football Champions",
-  "main": "train.js",
-  "scripts": {
-    "train": "node train.js",
-    "train:5k": "node train.js --episodes=5000",
-    "train:10k": "node train.js --episodes=10000"
-  },
-  "dependencies": {
-    "@tensorflow/tfjs-node": "^4.17.0"
-  }
+    "name": "rl-football-trainer",
+    "version": "1.0.0",
+    "description": "Headless training for RL Football Champions",
+    "main": "train.js",
+    "scripts": {
+        "train": "node train.js",
+        "train:5k": "node train.js --episodes=5000",
+        "train:10k": "node train.js --episodes=10000"
+    },
+    "dependencies": {
+        "@tensorflow/tfjs": "^4.17.0"
+    }
 }

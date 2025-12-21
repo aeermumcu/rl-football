@@ -2,7 +2,7 @@
  * Headless DQN Agent for Node.js Training
  * Compatible with browser version - exports weights in same format
  */
-const tf = require('@tensorflow/tfjs-node');
+const tf = require('@tensorflow/tfjs');
 
 class DQNAgent {
     constructor(name, team) {
