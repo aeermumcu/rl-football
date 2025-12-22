@@ -18,7 +18,7 @@ class DQNAgent {
         this.gamma = 0.99;
         this.epsilon = 1.0;
         this.epsilonMin = 0.05;
-        this.epsilonDecay = 0.995;
+        this.epsilonDecay = 0.9995;  // Slower decay for more exploration
 
         // Experience replay
         this.replayBuffer = [];
@@ -253,8 +253,17 @@ class DQNAgent {
         const inCorner = (player.x < cornerMargin || player.x > fieldWidth - cornerMargin) &&
             (player.y < cornerMargin || player.y > fieldHeight - cornerMargin);
         if (inCorner) {
-            reward -= 5;
-            if (distToBall > 100) reward -= 3;
+            reward -= 10;  // Much stronger corner penalty
+            if (distToBall > 100) reward -= 5;
+        }
+
+        // Midfield positioning bonus - encourage being in the middle of the field
+        const centerX = fieldWidth / 2;
+        const centerY = fieldHeight / 2;
+        const distFromCenter = Math.sqrt((player.x - centerX) ** 2 + (player.y - centerY) ** 2);
+        const maxDist = Math.sqrt(centerX ** 2 + centerY ** 2);
+        if (distFromCenter < maxDist * 0.4) {
+            reward += 0.5;  // Small bonus for being in central area
         }
 
         if (distToBall > 250) reward -= 1.5;

@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Training artifacts (weights can be large)
+trainer/weights/
+
+# OS files
+.DS_Store
+
+# Lock files (generated on install)
+package-lock.json
+
+# Editor
+.vscode/
+.idea/

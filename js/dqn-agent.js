@@ -138,9 +138,9 @@ class DQNAgent {
         const opponentX = opponent.x / fieldWidth;
         const opponentY = opponent.y / fieldHeight;
 
-        // Distance and angle to ball
-        const distBall = player.distanceTo(ball) / Math.sqrt(fieldWidth ** 2 + fieldHeight ** 2);
-        const angleBall = (player.angleTo(ball) + Math.PI) / (2 * Math.PI);
+        // Distance and angle to ball (use internal methods for consistency with trainer)
+        const distBall = this.distance(player, ball) / Math.sqrt(fieldWidth ** 2 + fieldHeight ** 2);
+        const angleBall = (this.angle(player, ball) + Math.PI) / (2 * Math.PI);
 
         // Distance and angle to goal
         const goalX = this.team === 'blip' ? fieldWidth : 0;
@@ -156,6 +156,15 @@ class DQNAgent {
             distBall, angleBall,
             distGoal, angleGoal
         ];
+    }
+
+    // Helper methods for distance/angle (must match trainer exactly)
+    distance(a, b) {
+        return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+    }
+
+    angle(a, b) {
+        return Math.atan2(b.y - a.y, b.x - a.x);
     }
 
     /**
@@ -175,11 +184,20 @@ class DQNAgent {
             actionIndex = Math.floor(Math.random() * this.actionSize);
         } else {
             // Exploit: use neural network with proper tensor cleanup
-            actionIndex = tf.tidy(() => {
+            const result = tf.tidy(() => {
                 const stateTensor = tf.tensor2d([state], [1, this.stateSize]);
                 const qValues = this.model.predict(stateTensor);
-                return qValues.argMax(1).dataSync()[0];
+                const qArr = qValues.arraySync()[0];
+                const maxIdx = qValues.argMax(1).dataSync()[0];
+                return { maxIdx, qArr };
             });
+            actionIndex = result.maxIdx;
+
+            // Debug: log first 10 action choices
+            this.debugCount = (this.debugCount || 0) + 1;
+            if (this.debugCount <= 10) {
+                console.log(`${this.name} action: ${this.actions[actionIndex].name} (Q-values: ${result.qArr.map(q => q.toFixed(2)).join(', ')})`);
+            }
         }
 
         this.lastState = state;
@@ -286,7 +304,7 @@ class DQNAgent {
         }
 
         // === DISTANCE TO BALL ===
-        const distToBall = player.distanceTo(ball);
+        const distToBall = this.distance(player, ball);
         if (distToBall < 40) {
             reward += 3;  // Very close to ball - excellent!
         } else if (distToBall < 80) {
@@ -340,11 +358,20 @@ class DQNAgent {
         const inCorner = (player.x < cornerMargin || player.x > fieldWidth - cornerMargin) &&
             (player.y < cornerMargin || player.y > fieldHeight - cornerMargin);
         if (inCorner) {
-            reward -= 5;  // Strong penalty!
+            reward -= 10;  // Very strong penalty!
             // Extra penalty if stuck in corner far from ball
             if (distToBall > 100) {
-                reward -= 3;
+                reward -= 5;
             }
+        }
+
+        // Midfield positioning bonus - encourage being in the middle of the field
+        const centerX = fieldWidth / 2;
+        const centerY = fieldHeight / 2;
+        const distFromCenter = Math.sqrt((player.x - centerX) ** 2 + (player.y - centerY) ** 2);
+        const maxDist = Math.sqrt(centerX ** 2 + centerY ** 2);
+        if (distFromCenter < maxDist * 0.4) {
+            reward += 0.5;  // Small bonus for being in central area
         }
 
         // Far from ball penalty (stronger)
@@ -424,7 +451,24 @@ class DQNAgent {
      * Import model weights from saved data
      */
     async importWeights(data) {
-        if (!this.isInitialized || !data || !data.weights) return;
+        // Wait for initialization if not ready yet
+        let waitCount = 0;
+        while (!this.isInitialized && waitCount < 50) {
+            await new Promise(r => setTimeout(r, 100));
+            waitCount++;
+        }
+
+        if (!data || !data.weights) {
+            console.error(`${this.name}: No weights data provided!`);
+            return;
+        }
+
+        if (!this.isInitialized) {
+            console.error(`${this.name}: Network not initialized after waiting!`);
+            return;
+        }
+
+        console.log(`${this.name}: Loading ${data.weights.length} weight tensors...`);
 
         const weights = data.weights.map(w =>
             tf.tensor(w.data, w.shape)
@@ -435,6 +479,8 @@ class DQNAgent {
 
         this.epsilon = data.epsilon || this.epsilon;
         this.trainStepCount = data.trainStepCount || 0;
+
+        console.log(`${this.name}: Weights loaded! epsilon=${this.epsilon.toFixed(3)}`);
 
         // Clean up
         weights.forEach(w => w.dispose());

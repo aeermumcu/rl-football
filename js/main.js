@@ -340,8 +340,16 @@ class App {
                 // Only train every 4th step
                 this.trainCounter = (this.trainCounter || 0) + 1;
                 if (this.trainCounter % 4 === 0) {
-                    this.blipAgent.train();
-                    this.bloopAgent.train();
+                    // Asymmetric training: only train one agent at a time to prevent collapse
+                    const alternateEvery = 500;
+                    const phase = Math.floor(this.episodeCount / alternateEvery);
+                    const trainBlip = phase % 2 === 0;
+
+                    if (trainBlip) {
+                        this.blipAgent.train();
+                    } else {
+                        this.bloopAgent.train();
+                    }
                 }
             } else {
                 // Q-learning: direct update
@@ -480,9 +488,22 @@ class App {
         reader.onload = async (e) => {
             try {
                 const data = JSON.parse(e.target.result);
+                console.log('Loading file, keys:', Object.keys(data));
 
-                // Check AI type compatibility
-                const savedType = data.aiType || 'qlearning';
+                // Detect AI type - check multiple possible locations
+                let savedType = data.aiType;
+                if (!savedType) {
+                    // Try to detect from data structure
+                    if (data.blipAgent?.weights || data.blip?.weights) {
+                        savedType = 'dqn';
+                    } else if (data.blipAgent?.qTable || data.blip?.qTable) {
+                        savedType = 'qlearning';
+                    } else {
+                        savedType = 'dqn'; // Default to DQN for trainer files
+                    }
+                }
+                console.log('Detected AI type:', savedType);
+
                 if (savedType !== this.aiType) {
                     const switchType = confirm(
                         `This save file is for ${savedType.toUpperCase()}. ` +
@@ -502,16 +523,21 @@ class App {
                 }
 
                 // Restore state
-                this.episodeCount = data.episodeCount || 0;
+                this.episodeCount = data.episodeCount || data.episode || 0;
                 this.stats = data.stats || { blipWins: 0, bloopWins: 0, draws: 0, totalGoals: 0 };
 
-                // Restore agents based on type
+                // Restore agents based on type - handle both browser and trainer formats
                 if (this.aiType === 'dqn') {
-                    await this.blipAgent.importWeights(data.blipAgent);
-                    await this.bloopAgent.importWeights(data.bloopAgent);
+                    const blipData = data.blipAgent || data.blip;
+                    const bloopData = data.bloopAgent || data.bloop;
+                    console.log('Loading DQN weights, blipData exists:', !!blipData, 'bloopData exists:', !!bloopData);
+                    await this.blipAgent.importWeights(blipData);
+                    await this.bloopAgent.importWeights(bloopData);
                 } else {
-                    this.blipAgent.importQTable(data.blipAgent);
-                    this.bloopAgent.importQTable(data.bloopAgent);
+                    const blipData = data.blipAgent || data.blip;
+                    const bloopData = data.bloopAgent || data.bloop;
+                    this.blipAgent.importQTable(blipData);
+                    this.bloopAgent.importQTable(bloopData);
                 }
 
                 // Restore visualizer history
