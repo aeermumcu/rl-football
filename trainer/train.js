@@ -2,10 +2,13 @@
  * Headless Training Script for RL Football Champions
  * Run with: npm run train or node train.js --episodes=5000
  * Resume with: node train.js --resume=weights/weights-4000.json --episodes=10000
+ * 
+ * NEW: Trains DQN against aggressive SimpleAI opponent to learn active play
  */
 const fs = require('fs');
 const path = require('path');
 const DQNAgent = require('./dqn-agent');
+const SimpleAI = require('./simple-ai');
 const { Game } = require('./game');
 
 // Parse command line arguments
@@ -15,8 +18,7 @@ let saveEvery = 500;
 let matchTime = 30;
 let resumeFile = null;
 let startEpisode = 1;
-let asymmetric = true;  // Default to asymmetric training
-let alternateEvery = 500;  // Switch training agent every N episodes
+let useSimpleOpponent = true;  // NEW: Use SimpleAI as opponent
 
 args.forEach(arg => {
     if (arg.startsWith('--episodes=')) {
@@ -31,11 +33,8 @@ args.forEach(arg => {
     if (arg.startsWith('--resume=')) {
         resumeFile = arg.split('=')[1];
     }
-    if (arg === '--symmetric') {
-        asymmetric = false;  // Use old symmetric training
-    }
-    if (arg.startsWith('--alternate-every=')) {
-        alternateEvery = parseInt(arg.split('=')[1]);
+    if (arg === '--self-play') {
+        useSimpleOpponent = false;  // Old behavior: train both DQN agents
     }
 });
 
@@ -45,8 +44,7 @@ console.log('='.repeat(50));
 console.log(`Episodes: ${targetEpisodes}`);
 console.log(`Match time: ${matchTime}s`);
 console.log(`Save every: ${saveEvery} episodes`);
-console.log(`Training mode: ${asymmetric ? 'ASYMMETRIC (anti-collapse)' : 'symmetric'}`);
-if (asymmetric) console.log(`Alternate training every: ${alternateEvery} episodes`);
+console.log(`Opponent: ${useSimpleOpponent ? '🎯 SimpleAI (ball-chaser)' : 'DQN (self-play)'}`);
 if (resumeFile) console.log(`Resuming from: ${resumeFile}`);
 console.log('='.repeat(50));
 
@@ -54,8 +52,11 @@ console.log('='.repeat(50));
 const game = new Game();
 game.matchTime = matchTime;
 
+// DQN agent learns, opponent is either SimpleAI or another DQN
 const blipAgent = new DQNAgent('Blip', 'blip');
-const bloopAgent = new DQNAgent('Bloop', 'bloop');
+const bloopAgent = useSimpleOpponent
+    ? new SimpleAI('Bloop', 'bloop')
+    : new DQNAgent('Bloop', 'bloop');
 
 // Stats
 let stats = {
@@ -160,25 +161,16 @@ async function train() {
                 game.fieldWidth, game.fieldHeight
             );
 
-            // Store experiences (both agents always remember for replay buffer)
+            // Store experiences (only Blip learns, Bloop is SimpleAI)
             blipAgent.remember(blipState, blipAgent.lastAction, blipReward, newBlipState, done);
-            bloopAgent.remember(bloopState, bloopAgent.lastAction, bloopReward, newBloopState, done);
+            if (!useSimpleOpponent) {
+                bloopAgent.remember(bloopState, bloopAgent.lastAction, bloopReward, newBloopState, done);
+            }
 
-            // Train every 4 steps
+            // Train every 4 steps (only the learning agent)
             if (steps % 4 === 0) {
-                if (asymmetric) {
-                    // Only train one agent at a time to prevent collapse
-                    const phase = Math.floor((episode - 1) / alternateEvery);
-                    const trainBlip = phase % 2 === 0;
-
-                    if (trainBlip) {
-                        await blipAgent.train();
-                    } else {
-                        await bloopAgent.train();
-                    }
-                } else {
-                    // Symmetric: train both (old behavior, prone to collapse)
-                    await blipAgent.train();
+                await blipAgent.train();
+                if (!useSimpleOpponent) {
                     await bloopAgent.train();
                 }
             }
@@ -199,24 +191,11 @@ async function train() {
             const epsPerSec = (episode - startEpisode + 1) / elapsed;
             const remaining = (targetEpisodes - episode) / epsPerSec;
 
-            // Show which agent is training in asymmetric mode
-            let trainingInfo = '';
-            if (asymmetric) {
-                const phase = Math.floor((episode - 1) / alternateEvery);
-                const trainBlip = phase % 2 === 0;
-                trainingInfo = ` | Training: ${trainBlip ? '🔵 Blip' : '🔴 Bloop'}`;
-            }
+            const epsilon = blipAgent.epsilon?.toFixed(3) || 'N/A';
 
-            console.log(`Episode ${episode}/${targetEpisodes} | ε: ${blipAgent.epsilon.toFixed(3)}/${bloopAgent.epsilon.toFixed(3)}${trainingInfo} | ` +
+            console.log(`Episode ${episode}/${targetEpisodes} | ε: ${epsilon} | ` +
                 `Blip: ${stats.blipWins} | Bloop: ${stats.bloopWins} | Draws: ${stats.draws} | ` +
                 `Goals: ${stats.totalGoals} | ETA: ${formatTime(remaining)}`);
-        }
-
-        // Log phase change
-        if (asymmetric && episode > 1 && (episode - 1) % alternateEvery === 0) {
-            const phase = Math.floor((episode - 1) / alternateEvery);
-            const nowTraining = phase % 2 === 0 ? '🔵 Blip' : '🔴 Bloop';
-            console.log(`\n🔄 Phase ${phase + 1}: Now training ${nowTraining}\n`);
         }
 
         // Auto-save
@@ -250,7 +229,8 @@ async function saveWeights(episode) {
     }
 
     const blipWeights = await blipAgent.exportWeights();
-    const bloopWeights = await bloopAgent.exportWeights();
+    // Bloop only has weights if it's a DQN agent (self-play mode)
+    const bloopWeights = !useSimpleOpponent ? await bloopAgent.exportWeights() : blipWeights;
 
     const saveData = {
         version: 2,
@@ -258,9 +238,10 @@ async function saveWeights(episode) {
         episode,
         episodeCount: episode,
         timestamp: new Date().toISOString(),
+        trainedAgainst: useSimpleOpponent ? 'SimpleAI' : 'DQN',
         stats,
         blipAgent: blipWeights,
-        bloopAgent: bloopWeights,
+        bloopAgent: bloopWeights,  // Use Blip's weights for both when vs SimpleAI
         // Also save in old format for trainer resume compatibility
         blip: blipWeights,
         bloop: bloopWeights

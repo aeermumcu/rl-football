@@ -1,8 +1,48 @@
 /**
- * Headless DQN Agent for Node.js Training
- * Compatible with browser version - exports weights in same format
+ * Advanced DQN Agent for Node.js Training
+ * Features: Dueling Architecture, Optimized Hyperparameters
  */
 const tf = require('@tensorflow/tfjs-node');
+
+/**
+ * Custom layer to combine Value and Advantage streams for Dueling DQN
+ * Input: [value (1), advantages (actionSize)] concatenated
+ * Output: Q(s,a) = V(s) + (A(s,a) - mean(A))
+ */
+class DuelingCombineLayer extends tf.layers.Layer {
+    constructor(config) {
+        super(config);
+        this.actionSize = config.actionSize;
+    }
+
+    computeOutputShape(inputShape) {
+        return [inputShape[0], this.actionSize];
+    }
+
+    call(inputs) {
+        return tf.tidy(() => {
+            const input = Array.isArray(inputs) ? inputs[0] : inputs;
+            // Split: first column is value, rest is advantages
+            const value = tf.slice(input, [0, 0], [-1, 1]);
+            const advantages = tf.slice(input, [0, 1], [-1, this.actionSize]);
+            // Q = V + (A - mean(A))
+            const meanAdvantage = tf.mean(advantages, -1, true);
+            return tf.add(value, tf.sub(advantages, meanAdvantage));
+        });
+    }
+
+    getConfig() {
+        const config = super.getConfig();
+        config.actionSize = this.actionSize;
+        return config;
+    }
+
+    static get className() {
+        return 'DuelingCombineLayer';
+    }
+}
+tf.serialization.registerClass(DuelingCombineLayer);
+
 
 class DQNAgent {
     constructor(name, team) {
@@ -13,21 +53,21 @@ class DQNAgent {
         this.stateSize = 12;
         this.actionSize = 10;
 
-        // Hyperparameters
-        this.learningRate = 0.001;
-        this.gamma = 0.99;
+        // OPTIMIZED Hyperparameters for better learning
+        this.learningRate = 0.0005;     // Lower for stability (was 0.001)
+        this.gamma = 0.995;             // Value future more (was 0.99)
         this.epsilon = 1.0;
-        this.epsilonMin = 0.05;
-        this.epsilonDecay = 0.9995;  // Slower decay for more exploration
+        this.epsilonMin = 0.02;         // Lower minimum for more exploitation
+        this.epsilonDecay = 0.9999;     // Much slower decay (was 0.9995)
 
-        // Experience replay
+        // Larger experience replay for more diverse learning
         this.replayBuffer = [];
-        this.bufferSize = 10000;
-        this.batchSize = 32;
-        this.minBufferSize = 100;
+        this.bufferSize = 50000;        // 5x larger (was 10000)
+        this.batchSize = 64;            // Larger batches (was 32)
+        this.minBufferSize = 500;       // Wait longer before training
 
         // Target network update frequency
-        this.targetUpdateFreq = 100;
+        this.targetUpdateFreq = 500;    // Less frequent updates for stability (was 100)
         this.trainStepCount = 0;
 
         // Networks
@@ -64,33 +104,68 @@ class DQNAgent {
         console.log(`${this.name} DQN initialized!`);
     }
 
+    /**
+     * Create Dueling DQN network
+     * Separates value stream V(s) and advantage stream A(s,a)
+     * Q(s,a) = V(s) + (A(s,a) - mean(A))
+     */
     createNetwork() {
-        const model = tf.sequential();
+        // Input layer
+        const input = tf.input({ shape: [this.stateSize] });
 
-        model.add(tf.layers.dense({
-            inputShape: [this.stateSize],
+        // Shared feature layers
+        let shared = tf.layers.dense({
             units: 256,
             activation: 'relu',
             kernelInitializer: 'heNormal'
-        }));
+        }).apply(input);
 
-        model.add(tf.layers.dense({
+        shared = tf.layers.dense({
+            units: 256,
+            activation: 'relu',
+            kernelInitializer: 'heNormal'
+        }).apply(shared);
+
+        shared = tf.layers.dense({
             units: 128,
             activation: 'relu',
             kernelInitializer: 'heNormal'
-        }));
+        }).apply(shared);
 
-        model.add(tf.layers.dense({
+        // Value stream - estimates V(s)
+        let valueStream = tf.layers.dense({
             units: 64,
             activation: 'relu',
             kernelInitializer: 'heNormal'
-        }));
+        }).apply(shared);
 
-        model.add(tf.layers.dense({
+        const value = tf.layers.dense({
+            units: 1,
+            activation: 'linear',
+            kernelInitializer: 'heNormal',
+            name: 'value'
+        }).apply(valueStream);
+
+        // Advantage stream - estimates A(s,a)
+        let advantageStream = tf.layers.dense({
+            units: 64,
+            activation: 'relu',
+            kernelInitializer: 'heNormal'
+        }).apply(shared);
+
+        const advantage = tf.layers.dense({
             units: this.actionSize,
             activation: 'linear',
-            kernelInitializer: 'heNormal'
-        }));
+            kernelInitializer: 'heNormal',
+            name: 'advantage'
+        }).apply(advantageStream);
+
+        // Combine: Q(s,a) = V(s) + (A(s,a) - mean(A))
+        // Using concatenation + custom layer for compatibility
+        const combined = tf.layers.concatenate().apply([value, advantage]);
+        const qValues = new DuelingCombineLayer({ actionSize: this.actionSize }).apply(combined);
+
+        const model = tf.model({ inputs: input, outputs: qValues });
 
         model.compile({
             optimizer: tf.train.adam(this.learningRate),
@@ -219,64 +294,94 @@ class DQNAgent {
     calculateReward(player, ball, opponent, event, fieldWidth) {
         let reward = 0;
         const fieldHeight = 420;
-
-        if (event === 'scored') reward += 200;
-        else if (event === 'conceded') reward -= 150;
-
         const distToBall = this.distance(player, ball);
-        if (distToBall < 40) reward += 3;
-        else if (distToBall < 80) reward += 1.5;
-        else if (distToBall < 150) reward += 0.5;
 
-        if (this.lastDistToBall !== null && distToBall < this.lastDistToBall) {
-            reward += 0.8;
+        // === GOAL EVENTS (massive rewards) ===
+        if (event === 'scored') {
+            reward += 500;  // HUGE reward for scoring
+        } else if (event === 'conceded') {
+            reward -= 300;  // Big penalty for conceding
+        }
+
+        // === ALWAYS CHASE THE BALL (most important) ===
+        // Continuous reward for being close to ball
+        const maxDist = Math.sqrt(fieldWidth ** 2 + fieldHeight ** 2);
+        const normalizedDist = distToBall / maxDist;
+        reward += (1 - normalizedDist) * 5;  // Up to +5 for being at ball, 0 for far away
+
+        // Big bonus for actually touching the ball
+        if (distToBall < 40) {
+            reward += 10;  // Ball possession is king!
+        }
+
+        // Reward for moving TOWARD the ball (not just being close)
+        if (this.lastDistToBall !== null) {
+            const distDelta = this.lastDistToBall - distToBall;  // Positive = getting closer
+            reward += distDelta * 0.5;  // Continuous reward for approach
+
+            // Extra bonus for reducing distance quickly
+            if (distDelta > 2) {
+                reward += 3;  // Fast approach bonus
+            }
         }
         this.lastDistToBall = distToBall;
 
-        const attackingGoalX = this.team === 'blip' ? fieldWidth : 0;
-        const ballInAttackHalf = this.team === 'blip' ? ball.x > fieldWidth / 2 : ball.x < fieldWidth / 2;
-        if (ballInAttackHalf && distToBall < 100) reward += 2;
+        // === MOVEMENT IS MANDATORY ===
+        const playerSpeed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
 
-        const ballMovingTowardGoal = (this.team === 'blip' && ball.vx > 2) || (this.team === 'bloop' && ball.vx < -2);
-        if (ballMovingTowardGoal) {
-            reward += 3;
-            if (distToBall < 60) reward += 2;
+        // Heavy penalty for standing still when not at the ball
+        if (playerSpeed < 0.5 && distToBall > 50) {
+            reward -= 8;  // MUCH stronger - don't just stand there!
         }
 
+        // Bonus for moving (any movement is good)
+        if (playerSpeed > 1) {
+            reward += 1;  // Always reward movement
+        }
+
+        // === ATTACKING BONUSES ===
+        const attackingGoalX = this.team === 'blip' ? fieldWidth : 0;
+
+        // Ball moving toward opponent's goal
+        const ballMovingTowardGoal = (this.team === 'blip' && ball.vx > 2) ||
+            (this.team === 'bloop' && ball.vx < -2);
+        if (ballMovingTowardGoal && distToBall < 80) {
+            reward += 8;  // You probably caused this!
+        }
+
+        // Ball close to opponent's goal
         const distBallToGoal = Math.abs(ball.x - attackingGoalX);
-        if (distBallToGoal < 150) reward += 3;
-        else if (distBallToGoal < 250) reward += 1;
+        if (distBallToGoal < 100) {
+            reward += 5;  // Dangerous position
+        }
 
-        reward -= 0.05;
-
+        // === PENALTIES ===
+        // Corner penalty
         const cornerMargin = 80;
         const inCorner = (player.x < cornerMargin || player.x > fieldWidth - cornerMargin) &&
             (player.y < cornerMargin || player.y > fieldHeight - cornerMargin);
         if (inCorner) {
-            reward -= 10;  // Much stronger corner penalty
-            if (distToBall > 100) reward -= 5;
+            reward -= 5;
+            if (distToBall > 100) reward -= 5;  // Extra if corner is pointless
         }
 
-        // Midfield positioning bonus - encourage being in the middle of the field
-        const centerX = fieldWidth / 2;
-        const centerY = fieldHeight / 2;
-        const distFromCenter = Math.sqrt((player.x - centerX) ** 2 + (player.y - centerY) ** 2);
-        const maxDist = Math.sqrt(centerX ** 2 + centerY ** 2);
-        if (distFromCenter < maxDist * 0.4) {
-            reward += 0.5;  // Small bonus for being in central area
+        // Far from ball penalty (escalating)
+        if (distToBall > 300) {
+            reward -= 5;  // Way too far
+        } else if (distToBall > 200) {
+            reward -= 3;
+        } else if (distToBall > 150) {
+            reward -= 1;
         }
 
-        if (distToBall > 250) reward -= 1.5;
-        else if (distToBall > 180) reward -= 0.8;
-
-        const playerSpeed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
-        if (playerSpeed < 0.5 && distToBall > 60) reward -= 2;
-        if (playerSpeed > 1 && this.lastDistToBall !== null && distToBall < this.lastDistToBall) {
-            reward += 1;
+        // Opponent closer to ball than you = bad
+        const opponentDistToBall = this.distance(opponent, ball);
+        if (opponentDistToBall < distToBall && distToBall > 60) {
+            reward -= 2;  // They're beating you to the ball!
         }
 
-        const ballMovingTowardOwnGoal = (this.team === 'blip' && ball.vx < -2) || (this.team === 'bloop' && ball.vx > 2);
-        if (ballMovingTowardOwnGoal && distToBall < 100) reward -= 2;
+        // Small time penalty to encourage action
+        reward -= 0.1;
 
         return reward;
     }
