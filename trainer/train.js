@@ -79,9 +79,11 @@ async function loadCheckpoint() {
     console.log(`📂 Loading checkpoint from ${resumeFile}...`);
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
 
-    // Load weights
+    // Load weights (only for DQN agents)
     await blipAgent.importWeights(data.blip);
-    await bloopAgent.importWeights(data.bloop);
+    if (!useSimpleOpponent && bloopAgent.importWeights) {
+        await bloopAgent.importWeights(data.bloop);
+    }
 
     // Restore stats and episode count
     stats = data.stats || stats;

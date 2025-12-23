@@ -26,7 +26,9 @@ class SimpleAI {
     }
 
     /**
-     * Always move toward the ball - no learning, just pure chase
+     * Smart ball-chasing behavior:
+     * - Chase ball when far
+     * - When close, push ball toward opponent's goal
      */
     chooseAction(state, training = true) {
         // State format: [playerX, playerY, ballX, ballY, ballVx, ballVy, opponentX, opponentY, distBall, angleBall, distGoal, angleGoal]
@@ -35,42 +37,59 @@ class SimpleAI {
         const ballX = state[2];
         const ballY = state[3];
 
-        // Calculate direction to ball
-        const dx = ballX - playerX;
-        const dy = ballY - playerY;
-
-        // Distance to ball (normalized)
+        // Distance to ball (normalized, 0 = at ball, 1 = max distance)
         const distToBall = state[8];
 
-        // If very close to ball, kick!
-        if (distToBall < 0.05) {  // ~40 pixels when normalized
-            this.lastAction = 8;  // kick action
-            return this.actions[8];
+        // Calculate direction to ball
+        const dxToBall = ballX - playerX;
+        const dyToBall = ballY - playerY;
+
+        // If very close to ball, push it toward opponent's goal
+        if (distToBall < 0.08) {
+            // Bloop attacks left goal (x=0), so push left
+            // This is a simple heuristic - move in direction of goal while kicking
+            const goalDir = this.team === 'bloop' ? -1 : 1;
+
+            // Kick if at ball
+            if (distToBall < 0.04) {
+                this.lastAction = 8;  // kick
+                return this.actions[8];
+            }
+
+            // Push toward goal - primarily horizontal
+            let moveDx = goalDir;
+            let moveDy = dyToBall > 0.01 ? 1 : (dyToBall < -0.01 ? -1 : 0);
+
+            // Find matching action (prioritize diagonal toward goal)
+            for (let i = 0; i < 8; i++) {
+                if (this.actions[i].dx === moveDx && this.actions[i].dy === moveDy) {
+                    this.lastAction = i;
+                    return this.actions[i];
+                }
+            }
         }
 
-        // Determine movement direction
+        // Otherwise, chase the ball
         let moveDx = 0, moveDy = 0;
-
-        // Threshold for diagonal vs straight movement
         const threshold = 0.02;
 
-        if (Math.abs(dx) > threshold) {
-            moveDx = dx > 0 ? 1 : -1;
+        if (Math.abs(dxToBall) > threshold) {
+            moveDx = dxToBall > 0 ? 1 : -1;
         }
-        if (Math.abs(dy) > threshold) {
-            moveDy = dy > 0 ? 1 : -1;
+        if (Math.abs(dyToBall) > threshold) {
+            moveDy = dyToBall > 0 ? 1 : -1;
         }
 
         // Find matching action
-        for (let i = 0; i < 8; i++) {  // First 8 are movement actions
+        for (let i = 0; i < 8; i++) {
             if (this.actions[i].dx === moveDx && this.actions[i].dy === moveDy) {
                 this.lastAction = i;
                 return this.actions[i];
             }
         }
 
-        // Fallback: move right (shouldn't happen)
-        this.lastAction = 3;
+        // Fallback: move toward ball center
+        this.lastAction = 3;  // right
         return this.actions[3];
     }
 

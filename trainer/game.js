@@ -159,6 +159,7 @@ class Game {
             const kickPower = player.kickAnimation > 0 ? 12 : 6;
             this.ball.vx = nx * kickPower + player.vx * 0.5;
             this.ball.vy = ny * kickPower + player.vy * 0.5;
+            player.kickAnimation = 0;  // Clear kick after use
             return true;
         }
         return false;
