@@ -3,6 +3,7 @@ node_modules/
 
 # Training artifacts (weights can be large)
 trainer/weights/
+weights/
 
 # OS files
 .DS_Store
