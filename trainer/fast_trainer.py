@@ -181,13 +181,15 @@ class VectorizedGame:
     def get_states(self, team=0):
         """
         Get observation states for all envs.
-        team=0 for Blip, team=1 for Bloop
+        team=0 for Blip (left), team=1 for Bloop (right)
         Returns: (N, 12) float32 array
         """
         if team == 0:
             player, opponent = self.blip, self.bloop
+            mirror = False
         else:
             player, opponent = self.bloop, self.blip
+            mirror = True
         
         # Normalized positions
         px = player[:, 0] / self.W
@@ -199,16 +201,49 @@ class VectorizedGame:
         ox = opponent[:, 0] / self.W
         oy = opponent[:, 1] / self.H
         
-        # Distance to ball
-        dist = np.sqrt((player[:, 0] - self.ball[:, 0])**2 + 
-                      (player[:, 1] - self.ball[:, 1])**2) / 830
+        # [FIX] Mirroring for Team 1 (Bloop)
+        # If playing as Bloop, we flip X so the agent thinks it's Blip attacking right
+        if mirror:
+            px = 1.0 - px
+            bx = 1.0 - bx
+            ox = 1.0 - ox
+            bvx = -bvx
+            # Y stays the same (symmetric)
+            # angle calculations will naturally follow from mirrored coords
+        
+        # Distance to ball (normalized)
+        dist = np.sqrt((px - bx)**2 + (py - by)**2) # normalized distance
+        # Note: JS uses pixel dist / 830, we use normalized dist directly logic
+        # But for consistency with JS rewards, let's stick to pixel-based dist logic or normalized
+        # The JS distance function uses raw pixels. Let's use raw pixels for distance to match logic
+        # Wait, the previous code used:
+        # dist = np.sqrt((player[:, 0] - self.ball[:, 0])**2 + ...) / 830
+        # Let's keep that but careful with mirroring. Distance is invariant to mirroring.
+        
+        raw_dist = np.sqrt((player[:, 0] - self.ball[:, 0])**2 + 
+                          (player[:, 1] - self.ball[:, 1])**2) / 830
         
         # Placeholders for angle features (matching JS format)
-        angle_ball = np.zeros(self.n, dtype=np.float32)
-        dist_goal = np.zeros(self.n, dtype=np.float32)
-        angle_goal = np.zeros(self.n, dtype=np.float32)
+        # We can implement them properly now to help the agent
+        angle_ball = np.arctan2(self.ball[:, 1] - player[:, 1], self.ball[:, 0] - player[:, 0])
+        if mirror:
+             # Mirror angle: reflect across Y axis
+             # dx -> -dx, dy -> dy. atan2(dy, -dx)
+             angle_ball = np.arctan2(self.ball[:, 1] - player[:, 1], -(self.ball[:, 0] - player[:, 0]))
         
-        return np.stack([px, py, bx, by, bvx, bvy, ox, oy, dist, 
+        angle_ball = (angle_ball + np.pi) / (2 * np.pi)
+        
+        # Goal components
+        # Target goal is always "My Attacking Goal"
+        # For Blip (team 0): X=720. For Bloop (team 1): X=0.
+        # But since we mirrored Bloop, the target is effectively at X=1.0 (normalized) for both.
+        
+        # Dist/Angle to goal (1.0, 0.5)
+        dist_goal = np.sqrt((px - 1.0)**2 + (py - 0.5)**2)
+        angle_goal = np.arctan2(0.5 - py, 1.0 - px)
+        angle_goal = (angle_goal + np.pi) / (2 * np.pi)
+        
+        return np.stack([px, py, bx, by, bvx, bvy, ox, oy, raw_dist, 
                         angle_ball, dist_goal, angle_goal], axis=1).astype(np.float32)
 
 
@@ -345,28 +380,30 @@ class ReplayBuffer:
 # REWARD CALCULATION (vectorized)
 # ============================================================================
 
-def calculate_rewards(game, events, last_dists):
+def calculate_rewards(player, opponent, ball, events, last_dists, team_idx=0):
     """
-    Calculate rewards for all environments.
-    Returns: (N,) rewards, (N,) new last_dists
+    Calculate rewards for a specific agent (Blip or Bloop).
+    team_idx: 0 for Blip (attacks right), 1 for Bloop (attacks left)
     """
-    n = game.n
+    n = player.shape[0]
     rewards = np.zeros(n, dtype=np.float32)
-    
-    player = game.blip
-    ball = game.ball
-    opponent = game.bloop
     
     # Distance to ball
     dist_to_ball = np.sqrt((player[:, 0] - ball[:, 0])**2 + 
                           (player[:, 1] - ball[:, 1])**2)
     
     # Goal events
-    rewards[events == 'W'] += 500   # Scored
-    rewards[events == 'L'] -= 300   # Conceded
+    # If team 0 (Blip): W=Score, L=Concede
+    # If team 1 (Bloop): L=Score (Blip lost), W=Concede (Blip won)
+    if team_idx == 0:
+        rewards[events == 'W'] += 500
+        rewards[events == 'L'] -= 300
+    else:
+        rewards[events == 'L'] += 500  # We scored (Blip lost)
+        rewards[events == 'W'] -= 300  # We conceded (Blip won)
     
     # Proximity reward
-    max_dist = 830  # sqrt(720^2 + 420^2)
+    max_dist = 830
     normalized_dist = dist_to_ball / max_dist
     rewards += (1 - normalized_dist) * 5
     
@@ -388,11 +425,17 @@ def calculate_rewards(game, events, last_dists):
     rewards[speed > 1] += 1
     
     # Ball moving toward opponent's goal
-    ball_toward_goal = (ball[:, 2] > 2) & (dist_to_ball < 80)
+    # Blip attacks > (vx > 2), Bloop attacks < (vx < -2)
+    if team_idx == 0:
+        ball_toward_goal = (ball[:, 2] > 2) & (dist_to_ball < 80)
+    else:
+        ball_toward_goal = (ball[:, 2] < -2) & (dist_to_ball < 80)
     rewards[ball_toward_goal] += 8
     
     # Ball close to goal
-    rewards[np.abs(ball[:, 0] - 720) < 100] += 5
+    # Blip target: 720. Bloop target: 0.
+    target_x = 720 if team_idx == 0 else 0
+    rewards[np.abs(ball[:, 0] - target_x) < 100] += 5
     
     # Corner penalty
     in_corner = ((player[:, 0] < 80) | (player[:, 0] > 640)) & \
@@ -516,9 +559,27 @@ class DQNAgent:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
     
     def export_weights(self, filepath):
-        """Export weights in browser-compatible format."""
+        """Export weights in browser-compatible format (Reordered for TF.js)."""
+        weights_list = self.model.get_weights()
+        
+        # Reorder weights to match TF.js expectation
+        # Python Keras (Functional): [Shared..., V_h, V_out, A_h, A_out]
+        # TF.js (Sequential-ish):    [Shared..., V_h, A_h, V_out, A_out]
+        # Indices:
+        # Shared: 0-5
+        # V_h: 6-7
+        # V_out: 8-9
+        # A_h: 10-11
+        # A_out: 12-13
+        
+        if len(weights_list) == 14:
+            new_order = weights_list[:8] + weights_list[10:12] + weights_list[8:10] + weights_list[12:]
+            weights_list = new_order
+        else:
+            print(f"⚠️ Warning: Unexpected weight count {len(weights_list)}, skipping reorder.")
+            
         weights = []
-        for w in self.model.get_weights():
+        for w in weights_list:
             weights.append({
                 'shape': list(w.shape),
                 'data': w.flatten().tolist()
@@ -570,7 +631,7 @@ class DQNAgent:
 
 def train(episodes=100000, n_envs=16, save_every=5000, resume=None):
     print("=" * 60)
-    print("🚀 RL Football - Fast Vectorized Trainer")
+    print("🚀 RL Football - Fast Vectorized Trainer (Self-Play Ready)")
     print("=" * 60)
     print(f"Episodes: {episodes}")
     print(f"Parallel environments: {n_envs}")
@@ -584,7 +645,6 @@ def train(episodes=100000, n_envs=16, save_every=5000, resume=None):
     start_episode = 0
     if resume:
         agent.import_weights(resume)
-        # Try to extract episode from filename
         try:
             start_episode = int(resume.split('-')[-1].split('.')[0])
         except:
@@ -593,93 +653,129 @@ def train(episodes=100000, n_envs=16, save_every=5000, resume=None):
     stats = {'W': 0, 'L': 0, 'D': 0, 'goals': 0}
     t0 = time.time()
     
-    # Episode tracking per environment
     env_episodes = np.zeros(n_envs, dtype=np.int32)
     total_episodes = start_episode
-    last_dists = None
+    
+    # Track distances for reward calculation (for both agents)
+    last_dists_blip = None
+    last_dists_bloop = None
+    
+    # Action mirror mapping for Bloop
+    MIRROR_MAP = np.array([0, 1, 3, 2, 5, 4, 7, 6, 8, 9], dtype=np.int32)
     
     while total_episodes < episodes:
         game.reset_all()
-        last_dists = None
+        last_dists_blip = None
+        last_dists_bloop = None
         
-        # Run until all environments finish
+        # Self-play curriculum: Start easy (SimpleAI), then switch to Self-Play
+        # Switch after 50k episodes (or 20% if total is small)
+        self_play_threshold = 50000
+        is_self_play = total_episodes > self_play_threshold
+        
         while not np.all(game.done):
             active = ~game.done
             
-            # Get states
+            # --- BLIP STEP ---
             states_blip = game.get_states(0)
-            states_bloop = game.get_states(1)
-            
-            # Select actions
             actions_blip = agent.act_batch(states_blip)
-            actions_bloop = simple_ai_actions(states_bloop)
             
-            # Step all environments
+            # --- BLOOP STEP ---
+            states_bloop = game.get_states(1) # Mirrored states
+            
+            if is_self_play:
+                # Agent plays against itself
+                actions_bloop_mirrored = agent.act_batch(states_bloop)
+                # Mirror actions back to real world (Right -> Left)
+                actions_bloop = MIRROR_MAP[actions_bloop_mirrored]
+            else:
+                # Agent plays against SimpleAI
+                actions_bloop = simple_ai_actions(states_bloop) # SimpleAI handles its own logic
+            
+            # --- ENVIRONMENT STEP ---
             events, dones = game.step(actions_blip, actions_bloop)
             
-            # Calculate rewards
-            rewards, last_dists = calculate_rewards(game, events, last_dists)
-            
-            # Get new states
-            new_states = game.get_states(0)
-            
-            # Store experiences (only from active environments)
-            agent.buffer.add_batch(
-                states_blip[active],
-                actions_blip[active],
-                rewards[active],
-                new_states[active],
-                dones[active]
+            # --- REWARDS BLIP ---
+            rewards_blip, last_dists_blip = calculate_rewards(
+                game.blip, game.bloop, game.ball, events, last_dists_blip, team_idx=0
             )
             
-            # Track goals
+            # --- REWARDS BLOOP ---
+            # We ONLY train Bloop if it's Self-Play
+            if is_self_play:
+                rewards_bloop, last_dists_bloop = calculate_rewards(
+                    game.bloop, game.blip, game.ball, events, last_dists_bloop, team_idx=1
+                )
+            
+            # --- NEXT STATES & MEMORY ---
+            new_states_blip = game.get_states(0)
+            new_states_bloop = game.get_states(1)
+            
+            # Store Blip experience
+            agent.buffer.add_batch(
+                states_blip[active], actions_blip[active], rewards_blip[active],
+                new_states_blip[active], dones[active]
+            )
+            
+            # Store Bloop experience (if self-play)
+            if is_self_play:
+                # Note: We must store MIRRORED actions for Bloop so the policy learns correctly
+                # actions_bloop is "Real", actions_bloop_mirrored is what the network produced
+                agent.buffer.add_batch(
+                    states_bloop[active], actions_bloop_mirrored[active], rewards_bloop[active],
+                    new_states_bloop[active], dones[active]
+                )
+            
+            # --- TRAINING ---
             stats['goals'] += np.sum(events != None)
             
-            # Train periodically
             if agent.buffer.size >= agent.min_buffer:
                 agent.train()
+                # If self-play, we might train twice or just rely on larger batch throughput
+                if is_self_play:
+                     # Train again to consume double data rate? 
+                     # Or just naturally faster buffer fill leads to more frequent "min_buffer" checks?
+                     # Actually, standard DQN trains every step typically. 
+                     # Here we train every step. Adding double data just fills buffer faster.
+                     pass
+
         
-        # Episode end - count finished episodes
+        # Episode end
         env_episodes += 1
         total_episodes += n_envs
         
         # Determine winners
         for i in range(n_envs):
-            if game.scores[i, 0] > game.scores[i, 1]:
-                stats['W'] += 1
-            elif game.scores[i, 1] > game.scores[i, 0]:
-                stats['L'] += 1
-            else:
-                stats['D'] += 1
+            if game.scores[i, 0] > game.scores[i, 1]: stats['W'] += 1
+            elif game.scores[i, 1] > game.scores[i, 0]: stats['L'] += 1
+            else: stats['D'] += 1
         
         # Decay epsilon
         for _ in range(n_envs):
-            agent.decay_epsilon()
+             agent.decay_epsilon()
         
-        # Progress logging
-        if total_episodes % (100 * n_envs) < n_envs or total_episodes <= n_envs:
+        # Progress logging (every 10 batches)
+        if total_episodes % (10 * n_envs) < n_envs or total_episodes <= n_envs:
             elapsed = time.time() - t0
             eps_sec = (total_episodes - start_episode) / elapsed if elapsed > 0 else 0
             eta = (episodes - total_episodes) / eps_sec if eps_sec > 0 else 0
             eta_str = f"{eta/3600:.1f}h" if eta > 3600 else f"{eta/60:.1f}m"
             
-            print(f"Ep {total_episodes}/{episodes} | ε:{agent.epsilon:.4f} | "
+            mode = "SELF-PLAY" if is_self_play else "SIMPLE-AI"
+            print(f"Ep {total_episodes}/{episodes} ({mode}) | ε:{agent.epsilon:.4f} | "
                   f"W:{stats['W']} L:{stats['L']} D:{stats['D']} | "
-                  f"Goals:{stats['goals']} | {eps_sec:.1f}/s | ETA:{eta_str}")
+                  f"{eps_sec:.1f}/s | ETA:{eta_str}")
         
         # Save checkpoints
         if total_episodes % save_every < n_envs:
             agent.export_weights(f"weights/weights-{total_episodes}.json")
-    
-    # Final save
+            
     agent.export_weights("weights/trained.json")
-    
     print("=" * 60)
     print("✅ Training Complete!")
     print(f"Final: W:{stats['W']} L:{stats['L']} D:{stats['D']}")
-    print(f"Total goals: {stats['goals']}")
     elapsed = time.time() - t0
-    print(f"Time: {elapsed/3600:.2f} hours ({elapsed:.0f}s)")
+    print(f"Time: {elapsed/3600:.2f} hours")
     print("=" * 60)
 
 
@@ -691,4 +787,11 @@ if __name__ == '__main__':
     parser.add_argument('--resume', type=str, default=None, help='Resume from weights file')
     
     args = parser.parse_args()
-    train(args.episodes, args.parallel_envs, args.save_every, args.resume)
+    
+    # Auto-detect if resume is needed
+    resume_path = args.resume
+    if resume_path is None and os.path.exists("weights/trained.json"):
+         print("Found previous trained weights, resuming...")
+         resume_path = "weights/trained.json"
+         
+    train(args.episodes, args.parallel_envs, args.save_every, resume_path)

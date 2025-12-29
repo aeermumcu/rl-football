@@ -182,26 +182,54 @@ class DQNAgent {
     }
 
     getState(player, ball, opponent, fieldWidth, fieldHeight) {
-        const playerX = player.x / fieldWidth;
-        const playerY = player.y / fieldHeight;
-        const ballX = ball.x / fieldWidth;
-        const ballY = ball.y / fieldHeight;
+        let playerX = player.x / fieldWidth;
+        let playerY = player.y / fieldHeight;
+        let ballX = ball.x / fieldWidth;
+        let ballY = ball.y / fieldHeight;
 
         const maxVel = 15;
-        const ballVx = Math.max(-1, Math.min(1, ball.vx / maxVel));
-        const ballVy = Math.max(-1, Math.min(1, ball.vy / maxVel));
+        let ballVx = Math.max(-1, Math.min(1, ball.vx / maxVel));
+        let ballVy = Math.max(-1, Math.min(1, ball.vy / maxVel));
 
-        const opponentX = opponent.x / fieldWidth;
-        const opponentY = opponent.y / fieldHeight;
+        let opponentX = opponent.x / fieldWidth;
+        let opponentY = opponent.y / fieldHeight;
+
+        // [FIX] Mirroring for Bloop
+        // If we are Bloop (attacking left), we flip the world horizontally
+        // so the neural net thinks we are Blip (attacking right)
+        if (this.team === 'bloop') {
+            playerX = 1 - playerX;
+            ballX = 1 - ballX;
+            opponentX = 1 - opponentX;
+            ballVx = -ballVx;
+        }
 
         const distBall = this.distance(player, ball) / Math.sqrt(fieldWidth ** 2 + fieldHeight ** 2);
-        const angleBall = (this.angle(player, ball) + Math.PI) / (2 * Math.PI);
 
-        const goalX = this.team === 'blip' ? fieldWidth : 0;
-        const goalY = fieldHeight / 2;
-        const distGoal = Math.sqrt((player.x - goalX) ** 2 + (player.y - goalY) ** 2) /
+        // Angle needs to be mirrored too if bloop
+        let angleBall = Math.atan2(ball.y - player.y, ball.x - player.x);
+        if (this.team === 'bloop') {
+            // Flip x component of angle: atan2(dy, -dx)
+            // Or simpler: just recompute with mirrored coords
+            // But since we didn't mirror raw coords above (only normalized), let's keep it consistent
+            angleBall = Math.atan2(ball.y - player.y, (fieldWidth - ball.x) - (fieldWidth - player.x));
+        }
+        angleBall = (angleBall + Math.PI) / (2 * Math.PI);
+
+        // Goal logic: always aim for "my attacking goal".
+        // For Blip: x=width. For Bloop: x=0.
+        // But since we mirrored Bloop's world, the net always thinks target is at x=1 (width).
+        // So distGoal/angleGoal calculations become constant relative to the mirrored position.
+
+        // Recalculate mirrored raw positions for dist/angle
+        const pX = this.team === 'bloop' ? fieldWidth - player.x : player.x;
+        const pY = player.y;
+        const gX = fieldWidth; // In mirrored world, always attacking right
+        const gY = fieldHeight / 2;
+
+        const distGoal = Math.sqrt((pX - gX) ** 2 + (pY - gY) ** 2) /
             Math.sqrt(fieldWidth ** 2 + fieldHeight ** 2);
-        const angleGoal = (Math.atan2(goalY - player.y, goalX - player.x) + Math.PI) / (2 * Math.PI);
+        const angleGoal = (Math.atan2(gY - pY, gX - pX) + Math.PI) / (2 * Math.PI);
 
         return [playerX, playerY, ballX, ballY, ballVx, ballVy, opponentX, opponentY, distBall, angleBall, distGoal, angleGoal];
     }
@@ -231,6 +259,49 @@ class DQNAgent {
                 return qValues.argMax(1).dataSync()[0];
             });
             actionIndex = result;
+        }
+
+        // [SUPERVISOR 2.0] Aggressive Chaser
+        // Pure RL often struggles with long-distance navigation or gets lazy.
+        // To make the AI "Unbeatable", we use a Hybrid approach:
+        // 1. Far from ball? Use perfect rule-based navigation to close the gap.
+        // 2. Close to ball? Use the Neural Network for tactical fighting/dribbling.
+
+        const pX = state[0]; // Player X (0-1)
+        const pY = state[1]; // Player Y (0-1)
+        const bX = state[2]; // Ball X (0-1)
+        const bY = state[3]; // Ball Y (0-1)
+        const dist = state[8]; // Distance (0-1)
+
+        // Threshold: 0.1 is roughly 40-50px.
+        // If farther than this, run straight at the ball.
+        if (dist > 0.1) {
+            const dx = bX - pX;
+            const dy = bY - pY;
+
+            // Determine best move direction (8-way)
+            // We want to minimize distance
+            const moveX = Math.abs(dx) > 0.02 ? (dx > 0 ? 1 : -1) : 0;
+            const moveY = Math.abs(dy) > 0.02 ? (dy > 0 ? 1 : -1) : 0;
+
+            for (let i = 0; i < 8; i++) {
+                if (this.actions[i].dx === moveX && this.actions[i].dy === moveY) {
+                    actionIndex = i;
+                    break;
+                }
+            }
+        }
+
+        // [FIX] Action Mirroring for Bloop
+        // If we mirrored the input world, the network thinks: "I want to go RIGHT (to attack)"
+        // But for Bloop, "attacking" means going LEFT. So we must flip the action.
+        if (this.team === 'bloop') {
+            // Mapping: 0:up, 1:down, 2:left, 3:right, 4:ul, 5:ur, 6:dl, 7:dr, 8:kick, 9:stay
+            // Flip Left (2) <-> Right (3)
+            // Flip UL (4) <-> UR (5)
+            // Flip DL (6) <-> DR (7)
+            const mirrorMap = [0, 1, 3, 2, 5, 4, 7, 6, 8, 9];
+            actionIndex = mirrorMap[actionIndex];
         }
 
         this.lastState = state;
@@ -383,6 +454,10 @@ class DQNAgent {
         if (this.epsilon > this.epsilonMin) {
             this.epsilon *= this.epsilonDecay;
         }
+    }
+
+    getEpsilon() {
+        return this.epsilon;
     }
 
     async exportWeights() {
