@@ -312,17 +312,17 @@ def create_dueling_dqn(state_size=12, action_size=10, lr=0.0005):
     inputs = layers.Input(shape=(state_size,))
     
     # Shared layers
-    x = layers.Dense(256, activation='relu', kernel_initializer='he_normal')(inputs)
-    x = layers.Dense(256, activation='relu', kernel_initializer='he_normal')(x)
-    x = layers.Dense(128, activation='relu', kernel_initializer='he_normal')(x)
+    x = layers.Dense(256, activation='relu', kernel_initializer='he_normal', name='shared_1')(inputs)
+    x = layers.Dense(256, activation='relu', kernel_initializer='he_normal', name='shared_2')(x)
+    x = layers.Dense(128, activation='relu', kernel_initializer='he_normal', name='shared_3')(x)
     
     # Value stream
-    v = layers.Dense(64, activation='relu', kernel_initializer='he_normal')(x)
-    v = layers.Dense(1, kernel_initializer='he_normal', name='value')(v)
+    v = layers.Dense(64, activation='relu', kernel_initializer='he_normal', name='value_hidden')(x)
+    v = layers.Dense(1, kernel_initializer='he_normal', name='value_out')(v)
     
     # Advantage stream
-    a = layers.Dense(64, activation='relu', kernel_initializer='he_normal')(x)
-    a = layers.Dense(action_size, kernel_initializer='he_normal', name='advantage')(a)
+    a = layers.Dense(64, activation='relu', kernel_initializer='he_normal', name='advantage_hidden')(x)
+    a = layers.Dense(action_size, kernel_initializer='he_normal', name='advantage_out')(a)
     
     # Combine: Q = V + (A - mean(A))
     mean_a = layers.Lambda(lambda t: tf.reduce_mean(t, axis=1, keepdims=True))(a)
@@ -380,27 +380,31 @@ class ReplayBuffer:
 # REWARD CALCULATION (vectorized)
 # ============================================================================
 
-def calculate_rewards(player, opponent, ball, events, last_dists, team_idx=0):
+def calculate_rewards(player, opponent, ball, events, last_dists, team_idx=0, sparse=False):
     """
-    Calculate rewards for a specific agent (Blip or Bloop).
-    team_idx: 0 for Blip (attacks right), 1 for Bloop (attacks left)
+    Calculate rewards.
+    If sparse=True, ONLY use W/L rewards.
     """
     n = player.shape[0]
     rewards = np.zeros(n, dtype=np.float32)
-    
-    # Distance to ball
-    dist_to_ball = np.sqrt((player[:, 0] - ball[:, 0])**2 + 
-                          (player[:, 1] - ball[:, 1])**2)
-    
-    # Goal events
-    # If team 0 (Blip): W=Score, L=Concede
-    # If team 1 (Bloop): L=Score (Blip lost), W=Concede (Blip won)
+
+    # Goal events (Always active)
     if team_idx == 0:
-        rewards[events == 'W'] += 500
-        rewards[events == 'L'] -= 300
+        rewards[events == 'W'] += 1.0  # Normalized reward for sparse
+        rewards[events == 'L'] -= 1.0
     else:
-        rewards[events == 'L'] += 500  # We scored (Blip lost)
-        rewards[events == 'W'] -= 300  # We conceded (Blip won)
+        rewards[events == 'L'] += 1.0
+        rewards[events == 'W'] -= 1.0
+    
+    if sparse:
+        return rewards, None  # No dense rewards
+    
+    # --- DENSE REWARDS BELOW (Used for bootstrapping) ---
+    
+    # If using dense rewards, we scale up global rewards to match magnitude (~500)
+    # Re-apply large scale if dense (standard logic)
+    rewards *= 500.0 
+
     
     # Proximity reward
     max_dist = 830
@@ -463,7 +467,7 @@ def calculate_rewards(player, opponent, ball, events, last_dists, team_idx=0):
 # COMPILED TENSORFLOW FUNCTIONS
 # ============================================================================
 
-@tf.function
+# @tf.function  <-- Disabled to prevent retracing with variable batch sizes
 def predict_batch(model, states):
     """Batched prediction - single GPU call for all states."""
     return model(states, training=False)
@@ -608,13 +612,29 @@ class DQNAgent:
     
     def import_weights(self, filepath):
         """Import weights from file."""
+        if filepath.endswith('.h5'):
+             self.model.load_weights(filepath)
+             print(f"✅ Loaded weights from H5: {filepath}")
+             return
+             
         with open(filepath, 'r') as f:
-            data = json.load(f)
+             data = json.load(f)
         
         agent_data = data.get('blipAgent') or data.get('blip')
         if not agent_data:
             print("⚠️ No weights found in file")
             return
+            
+        print("\n--- MODEL DEBUG INFO ---")
+        param_idx = 0
+        for i, layer in enumerate(self.model.layers):
+            weights = layer.get_weights()
+            if weights:
+                print(f"Layer {i} [{layer.name}]: {len(weights)} tensors")
+                for w in weights:
+                    print(f"  Tensor {param_idx}: Shape {w.shape}")
+                    param_idx += 1
+        print("------------------------\n")
         
         weights = [np.array(w['data']).reshape(w['shape']) 
                   for w in agent_data['weights']]
@@ -629,9 +649,10 @@ class DQNAgent:
 # MAIN TRAINING LOOP
 # ============================================================================
 
-def train(episodes=100000, n_envs=16, save_every=5000, resume=None):
+def train(episodes=100000, n_envs=16, save_every=5000, resume=None, sparse=False):
     print("=" * 60)
-    print("🚀 RL Football - Fast Vectorized Trainer (Self-Play Ready)")
+    print(f"🚀 RL Football Trainer | Sparse Mode: {sparse}")
+
     print("=" * 60)
     print(f"Episodes: {episodes}")
     print(f"Parallel environments: {n_envs}")
@@ -671,7 +692,7 @@ def train(episodes=100000, n_envs=16, save_every=5000, resume=None):
         # Self-play curriculum: Start easy (SimpleAI), then switch to Self-Play
         # Switch after 50k episodes (or 20% if total is small)
         self_play_threshold = 50000
-        is_self_play = total_episodes > self_play_threshold
+        is_self_play = total_episodes > self_play_threshold or sparse
         
         while not np.all(game.done):
             active = ~game.done
@@ -697,14 +718,14 @@ def train(episodes=100000, n_envs=16, save_every=5000, resume=None):
             
             # --- REWARDS BLIP ---
             rewards_blip, last_dists_blip = calculate_rewards(
-                game.blip, game.bloop, game.ball, events, last_dists_blip, team_idx=0
+                game.blip, game.bloop, game.ball, events, last_dists_blip, team_idx=0, sparse=sparse
             )
             
             # --- REWARDS BLOOP ---
             # We ONLY train Bloop if it's Self-Play
             if is_self_play:
                 rewards_bloop, last_dists_bloop = calculate_rewards(
-                    game.bloop, game.blip, game.ball, events, last_dists_bloop, team_idx=1
+                    game.bloop, game.blip, game.ball, events, last_dists_bloop, team_idx=1, sparse=sparse
                 )
             
             # --- NEXT STATES & MEMORY ---
@@ -785,6 +806,7 @@ if __name__ == '__main__':
     parser.add_argument('--parallel-envs', type=int, default=16, help='Parallel environments')
     parser.add_argument('--save-every', type=int, default=5000, help='Save frequency')
     parser.add_argument('--resume', type=str, default=None, help='Resume from weights file')
+    parser.add_argument('--sparse', action='store_true', help='Use sparse rewards (W/L only)')
     
     args = parser.parse_args()
     
@@ -794,4 +816,5 @@ if __name__ == '__main__':
          print("Found previous trained weights, resuming...")
          resume_path = "weights/trained.json"
          
-    train(args.episodes, args.parallel_envs, args.save_every, resume_path)
+    train(args.episodes, args.parallel_envs, args.save_every, resume_path, args.sparse)
+

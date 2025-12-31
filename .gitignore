@@ -14,3 +14,6 @@ package-lock.json
 # Editor
 .vscode/
 .idea/
+trained*.json
+*.h5
+*.weights.h5
