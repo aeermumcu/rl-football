@@ -1,9 +1,6 @@
 # Dependencies
 node_modules/
-
-# Training artifacts (weights can be large)
-trainer/weights/
-weights/
+.venv/
 
 # OS files
 .DS_Store
@@ -14,6 +11,16 @@ package-lock.json
 # Editor
 .vscode/
 .idea/
-trained*.json
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Keras/TF artifacts
 *.h5
 *.weights.h5
+
+# Keep weights in repo but ignore backups
+weights/*_backup*
+weights/*_original*
+weights/*_converted*
